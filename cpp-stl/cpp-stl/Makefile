@@ -2,15 +2,15 @@ CC=g++
 CFLAGS=-g -std=c++20
 #INCLUDES=-I./innodb
 
-all: cpp-stl
+all: cpp-stl-int cpp-stl-class
 
-cpp-stl: cpp-stl.cpp
-	$(CC) $(CFLAGS) cpp-stl.cpp -o cpp-stl
+cpp-stl-int: cpp-stl-int.cpp
+	$(CC) $(CFLAGS) cpp-stl-int.cpp -o cpp-stl-int
+
+cpp-stl-class: cpp-stl-class.cpp
+	$(CC) $(CFLAGS) cpp-stl-class.cpp -o cpp-stl-class
 
 clean:
-	rm *o cpp-stl
+	rm *o cpp-stl-int cpp-stl-class
 
-install:
-	cp cpp-stl $(HOME)/devel/install/
-
-.PHONY: all clean install
+.PHONY: all clean
