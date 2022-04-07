@@ -26,6 +26,11 @@ typedef struct mem_chunk {
 LIST_HEAD(mem_chunk_list, mem_chunk_header);
 typedef struct mem_chunk_list mem_chunk_list_t;
 
+typedef struct ma_zone_stats {
+    size_t mzs_allocs;
+    size_t mzs_frees;
+} ma_zone_stats_t;
+
 typedef struct ma_zone {
     size_t maz_mcsz; // mem chunk size not including mem chunk header
     lock_t maz_lock;
@@ -33,7 +38,10 @@ typedef struct ma_zone {
     page_list_t maz_pagelist;
     ssize_t maz_nfree;
     mem_chunk_list_t maz_freelist;
+    ma_zone_stats_t maz_stats;
 } ma_zone_t;
+
+size_t ma_zone_size(size_t znum);
 
 void *ma_alloc(size_t size);
 void ma_free(void *p);
@@ -42,7 +50,7 @@ void ma_teardown(void);
 
 size_t ma_nalloced(void);
 
-void ma_dump(void);
+void ma_dump(bool verbose);
 void ma_check(void);
 
 #endif // _MEMORY_ALLOCATOR_H_

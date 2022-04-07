@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <unistd.h>
 
 #include "memory_allocator.h"
 
@@ -24,13 +25,19 @@ error_out:
     return err;
 }
 
+size_t ma_zone_size(size_t znum) {
+    return (1 << (znum + MA_SMALLEST_ZONE_ORDER)) - sizeof(mem_chunk_header_t);
+}
+
 static int ma_init(void) {
-    size_t mcsz;
     int err;
     
+    err = pa_init();
+    if (err)
+        goto error_out;
+    
     for (int i = 0; i < MA_NUM_ZONES; i++) {
-        mcsz = (1 << (i + MA_SMALLEST_ZONE_ORDER)) - sizeof(mem_chunk_header_t);
-        err = ma_zinit(&ma_zones[i], mcsz);
+        err = ma_zinit(&ma_zones[i], ma_zone_size(i));
         if (err)
             goto error_out;
     }
@@ -47,7 +54,7 @@ static void ma_zone_init_new_page(ma_zone_t *maz, page_t *p) {
     uint8_t *pstart;
     mem_chunk_t *mc;
     size_t mem_chunk_size;
-    int mem_chunks_per_page;
+    size_t mem_chunks_per_page;
     
     mem_chunk_size = maz->maz_mcsz + sizeof(mem_chunk_header_t);
     mem_chunks_per_page = PA_PAGE_SIZE / mem_chunk_size;
@@ -104,6 +111,8 @@ static void *ma_zalloc(ma_zone_t *maz, size_t size) {
     maz->maz_nfree--;
     assert(maz->maz_nfree >= 0);
     
+    maz->maz_stats.mzs_allocs++;
+    
     lock_unlock(&maz->maz_lock);
     
     p = (uint8_t *)mc + sizeof(mem_chunk_header_t);
@@ -116,7 +125,8 @@ error_out:
 }
 
 void *ma_alloc(size_t size) {
-    void *p;
+    void *p = NULL;
+    page_t *page;
     int err;
     
     if (!ma_initd) {
@@ -131,12 +141,36 @@ void *ma_alloc(size_t size) {
         lock_unlock(&ma_lock);
     }
     
+    if (size == 0)
+        goto error_out;
+    
+    if (size > PA_PAGE_SIZE) { // TODO: write a page allocator that supports this
+        printf("ma_alloc: size > PA_PAGE_SIZE not yet supported\n");
+        goto error_out;
+    }
+    
     for (int i = 0; i < MA_NUM_ZONES; i++) {
         if (size <= ma_zones[i].maz_mcsz) {
             p = ma_zalloc(&ma_zones[i], size);
+            if (!p)
+                goto error_out;
             break;
         }
-        // else pa_page_alloc()
+    }
+    
+    if (!p) {
+        //
+        // size is too large for any of our
+        // zones. fall back to the page allocator
+        //
+        assert(size > ma_zones[MA_NUM_ZONES-1].maz_mcsz);
+        assert(size <= PA_PAGE_SIZE);
+        
+        page = pa_page_alloc();
+        if (!page)
+            goto error_out;
+        
+        p = page->p_address;
     }
     
     return p;
@@ -149,12 +183,19 @@ static void ma_zfree(ma_zone_t *maz, mem_chunk_t *mc) {
     lock_lock(&maz->maz_lock);
     LIST_INSERT_HEAD(&maz->maz_freelist, &mc->mc_header, mch_mazfl_link);
     maz->maz_nfree++;
+    maz->maz_stats.mzs_frees++;
     lock_unlock(&maz->maz_lock);
 }
 
 void ma_free(void *p) {
     mem_chunk_header_t *mch;
     size_t size;
+    
+    if (pa_addr_is_page_aligned(p)) {
+        // this must have come from the page allocator
+        pa_page_free(p);
+        goto out;
+    }
     
     mch = (mem_chunk_header_t *)((uint8_t *)p - sizeof(mem_chunk_header_t));
     size = mch->mch_sz;
@@ -164,9 +205,9 @@ void ma_free(void *p) {
             ma_zfree(&ma_zones[i], (mem_chunk_t *)mch);
             break;
         }
-        // else pa_page_free()
     }
     
+out:
     return;
 }
 
@@ -176,7 +217,7 @@ static void ma_zone_teardown(ma_zone_t *maz) {
     lock_lock(&maz->maz_lock);
     
     LIST_FOREACH_SAFE(p, &maz->maz_pagelist, p_mazpl_link, pnext)
-        pa_page_free(p);
+        pa_page_free(p->p_address);
     
     maz->maz_npages = 0;
     LIST_INIT(&maz->maz_pagelist);
@@ -192,6 +233,7 @@ static void ma_zone_teardown(ma_zone_t *maz) {
 void ma_teardown(void) {
     for (int i = 0; i < MA_NUM_ZONES; i++)
         ma_zone_teardown(&ma_zones[i]);
+    assert(pa_nalloced() == 0);
 }
 
 static size_t ma_zone_n_mem_chunks(ma_zone_t *maz) {
@@ -216,37 +258,40 @@ size_t ma_nalloced(void) {
     return nalloced;
 }
 
-static void ma_zone_dump(ma_zone_t *maz) {
+static void ma_zone_dump(ma_zone_t *maz, bool verbose) {
     page_t *p;
     mem_chunk_header_t *mch;
     
     lock_lock(&maz->maz_lock);
     
-    printf("maz_mcsz: %lu (%lu) maz_npages %lu maz_nfree %ld (n_mem_chunks %lu nalloced %lu)\n", maz->maz_mcsz,
-           maz->maz_mcsz + sizeof(mem_chunk_header_t), maz->maz_npages, maz->maz_nfree, ma_zone_n_mem_chunks(maz), ma_zone_nalloced(maz));
-    
-    if (!LIST_EMPTY(&maz->maz_pagelist)) {
-        printf("  maz_pagelist: ");
-        LIST_FOREACH(p, &maz->maz_pagelist, p_mazpl_link)
-            pa_page_dump(p);
-        printf("\n");
-    }
-    
-    if (!LIST_EMPTY(&maz->maz_freelist)) {
-        printf("  maz_freelist: ");
-        LIST_FOREACH(mch, &maz->maz_freelist, mch_mazfl_link)
-            printf("%p ", mch);
-        printf("\n");
+    printf("maz_mcsz: %lu (%lu) maz_npages %lu maz_nfree %ld mzs_allocs %lu mzs_frees %lu (n_mem_chunks %lu nalloced %lu)\n", maz->maz_mcsz,
+           maz->maz_mcsz + sizeof(mem_chunk_header_t), maz->maz_npages, maz->maz_nfree, maz->maz_stats.mzs_allocs, maz->maz_stats.mzs_frees,
+            ma_zone_n_mem_chunks(maz), ma_zone_nalloced(maz));
+
+    if (verbose) {
+        if (!LIST_EMPTY(&maz->maz_pagelist)) {
+            printf("  maz_pagelist: ");
+            LIST_FOREACH(p, &maz->maz_pagelist, p_mazpl_link)
+                pa_page_dump(p);
+            printf("\n");
+        }
+
+        if (!LIST_EMPTY(&maz->maz_freelist)) {
+            printf("  maz_freelist: ");
+            LIST_FOREACH(mch, &maz->maz_freelist, mch_mazfl_link)
+                printf("%p ", mch);
+            printf("\n");
+        }
     }
     
     lock_unlock(&maz->maz_lock);
 }
 
-void ma_dump(void) {
-    printf("memory allocator: num zones %d (mem chunk header size %lu)\n", MA_NUM_ZONES, sizeof(mem_chunk_header_t));
+void ma_dump(bool verbose) {
+    printf("memory allocator: num zones %d (page size %lu mem chunk header size %lu)\n", MA_NUM_ZONES, PA_PAGE_SIZE, sizeof(mem_chunk_header_t));
     for (int i = 0; i < MA_NUM_ZONES; i++) {
         printf("zone %d: ", i);
-        ma_zone_dump(&ma_zones[i]);
+        ma_zone_dump(&ma_zones[i], verbose);
         //printf("\n");
     }
 }
@@ -272,7 +317,7 @@ static void ma_zone_check(ma_zone_t *maz, ma_zone_t *prev_maz) {
         
         is_on_page_of_pagelist = false;
         LIST_FOREACH(p, &maz->maz_pagelist, p_mazpl_link) {
-            if (pa_addr_is_on_page(p, mch)) {
+            if (pa_addr_is_on_page(mch, p)) {
                 is_on_page_of_pagelist = true;
                 break;
             }
@@ -280,7 +325,7 @@ static void ma_zone_check(ma_zone_t *maz, ma_zone_t *prev_maz) {
         assert(is_on_page_of_pagelist);
         
         mch_last_byte = (uint8_t *)mch + sizeof(mem_chunk_header_t) + maz->maz_mcsz - 1;
-        assert(pa_addr_is_on_page(p, mch_last_byte));
+        assert(pa_addr_is_on_page(mch_last_byte, p));
         
         nfree++;
     }
