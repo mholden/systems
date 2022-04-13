@@ -9,7 +9,7 @@
 #include "synch.h"
 
 #define MA_SMALLEST_ZONE_ORDER 6
-#define MA_NUM_ZONES 6 // 2^5 -> 2^11 inclusive
+#define MA_NUM_ZONES 6
 
 typedef struct mem_chunk_header {
     size_t mch_sz; // requested allocation size
