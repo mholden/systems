@@ -21,8 +21,6 @@ struct bco_ops {
 typedef struct bc_stats {
     uint64_t bcs_hits;
     uint64_t bcs_misses;
-    uint64_t bcs_writes;
-    uint64_t bcs_flushes;
 } bc_stats_t;
 
 struct bcache {
@@ -35,6 +33,8 @@ struct bcache {
     uint32_t bc_blksz;
     uint32_t bc_currsz;
     uint32_t bc_maxsz;
+    uint32_t bc_ndirty;
+    uint32_t bc_nfree;
     bc_stats_t bc_stats;
 };
 

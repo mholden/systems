@@ -19,6 +19,8 @@ int ods_startup(const char *path, ods_t **ods);
 int ods_shutdown(ods_t *ods);
 
 void ods_dump(ods_t *ods);
+void ods_dump_locked(ods_t *ods);
+void ods_dump_disk(const char *path);
 
 void ods_check(ods_t *ods); // runtime memory check
 int ods_check_disk(const char *path); // offline disk check
@@ -36,6 +38,13 @@ void ods_bl_phys_dump(blk_phys_t *bp);
 //  1. bc lock
 //  2. tm lock
 //  3. jnl lock
+//
+// in the tx_flush'ing case
+//  -tx flush thread takes bc lock and also needs exclusive access
+//   to tm subsystem. so:
+//     1. bc lock holder must never wait on a tx flush
+//     2. bc lock holder must never call tx_flush
+//     3. tm_lock must never succeed if tx system is flushing
 //
 
 #endif // _ON_DISK_SYSTEM_H_

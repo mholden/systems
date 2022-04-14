@@ -23,10 +23,11 @@ struct journal {
 };
 
 int jnl_create(int fd, uint64_t offset, size_t dsksz);
-int jnl_startup(ods_t *ods);
+int jnl_startup(ods_t *ods, bool *jnl_flushed);
 int jnl_shutdown(jnl_t *jnl);
 
 uint32_t jnl_size(jnl_t *jnl);
+uint32_t jnl_capacity(jnl_t *jnl);
 tid_t jnl_get_next_tid(jnl_t *jnl);
 
 int jnl_write_transaction(jnl_t *jnl, blk_list_t *bl, uint32_t nblocks, tid_t tid);

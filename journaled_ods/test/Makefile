@@ -13,11 +13,8 @@ on_disk_system: test_on_disk_system.c ../on_disk_system.c ../include/on_disk_sys
 					../include/ods_block.h ../block.c ../include/block.h
 	$(CC) $(CFLAGS) $(INCLUDES) test_on_disk_system.c ../on_disk_system.c ../bcache.c ../journal.c ../transaction.c \
 		../ods_block.c ../block.c $(SY)/synch.c -pthread -o test_on_disk_system
-		
-bcache: test_bcache.c ../bcache.c ../include/bcache.h
-	$(CC) $(CFLAGS) $(INCLUDES) test_bcache.c ../bcache.c $(SY)/synch.c -pthread -o test_bcache
 
 clean:
-	rm *o test_on_disk_system test_bcache
+	rm *o test_on_disk_system
 
 .PHONY: all clean

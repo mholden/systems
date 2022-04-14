@@ -12,9 +12,11 @@
 		2A42555728004AD300E35C97 /* journal.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A42554A28004AD300E35C97 /* journal.c */; };
 		2A42555928004AD300E35C97 /* bcache.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A42555428004AD300E35C97 /* bcache.c */; };
 		2A4255602800CA1F00E35C97 /* ods_block.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A42555F2800CA1F00E35C97 /* ods_block.c */; };
+		2A4F8C742807593B00B980C1 /* ods_dump.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A4F8C732807593B00B980C1 /* ods_dump.c */; };
+		2A76952E28083700002910F7 /* ods_check.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A76952D28083700002910F7 /* ods_check.c */; };
+		2A769530280842EC002910F7 /* ods_exercise.c in Sources */ = {isa = PBXBuildFile; fileRef = 2A76952F280842EC002910F7 /* ods_exercise.c */; };
 		2AA83FA828047E7E00C79B19 /* block.c in Sources */ = {isa = PBXBuildFile; fileRef = 2AA83FA728047E7E00C79B19 /* block.c */; };
 		2ACF4E60280439C20022D651 /* test_on_disk_system.c in Sources */ = {isa = PBXBuildFile; fileRef = 2ACF4E5E280439C10022D651 /* test_on_disk_system.c */; };
-		2ACF4E6228043A5A0022D651 /* test_bcache.c in Sources */ = {isa = PBXBuildFile; fileRef = 2ACF4E6128043A5A0022D651 /* test_bcache.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -47,10 +49,13 @@
 		2A42555D2800C40400E35C97 /* ods_block.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ods_block.h; sourceTree = "<group>"; };
 		2A42555E2800C58E00E35C97 /* block.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = block.h; sourceTree = "<group>"; };
 		2A42555F2800CA1F00E35C97 /* ods_block.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ods_block.c; sourceTree = SOURCE_ROOT; };
+		2A4F8C732807593B00B980C1 /* ods_dump.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ods_dump.c; sourceTree = "<group>"; };
+		2A4F8C752807595E00B980C1 /* Makefile */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
+		2A76952D28083700002910F7 /* ods_check.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ods_check.c; sourceTree = "<group>"; };
+		2A76952F280842EC002910F7 /* ods_exercise.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = ods_exercise.c; sourceTree = "<group>"; };
 		2AA83FA728047E7E00C79B19 /* block.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = block.c; sourceTree = SOURCE_ROOT; };
 		2ACF4E5D280439C10022D651 /* Makefile */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.make; path = Makefile; sourceTree = "<group>"; };
 		2ACF4E5E280439C10022D651 /* test_on_disk_system.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = test_on_disk_system.c; sourceTree = "<group>"; };
-		2ACF4E6128043A5A0022D651 /* test_bcache.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = test_bcache.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,6 +95,7 @@
 				2A42555F2800CA1F00E35C97 /* ods_block.c */,
 				2A42554928004AD300E35C97 /* on_disk_system.c */,
 				2A42554828004AD300E35C97 /* transaction.c */,
+				2A4F8C722807593B00B980C1 /* utils */,
 				2ACF4E5C280439C10022D651 /* test */,
 			);
 			path = journaled_ods;
@@ -113,12 +119,22 @@
 			path = include;
 			sourceTree = SOURCE_ROOT;
 		};
+		2A4F8C722807593B00B980C1 /* utils */ = {
+			isa = PBXGroup;
+			children = (
+				2A4F8C752807595E00B980C1 /* Makefile */,
+				2A4F8C732807593B00B980C1 /* ods_dump.c */,
+				2A76952D28083700002910F7 /* ods_check.c */,
+				2A76952F280842EC002910F7 /* ods_exercise.c */,
+			);
+			path = utils;
+			sourceTree = SOURCE_ROOT;
+		};
 		2ACF4E5C280439C10022D651 /* test */ = {
 			isa = PBXGroup;
 			children = (
 				2ACF4E5D280439C10022D651 /* Makefile */,
 				2ACF4E5E280439C10022D651 /* test_on_disk_system.c */,
-				2ACF4E6128043A5A0022D651 /* test_bcache.c */,
 			);
 			path = test;
 			sourceTree = SOURCE_ROOT;
@@ -182,11 +198,13 @@
 			files = (
 				2A4255602800CA1F00E35C97 /* ods_block.c in Sources */,
 				2ACF4E60280439C20022D651 /* test_on_disk_system.c in Sources */,
-				2ACF4E6228043A5A0022D651 /* test_bcache.c in Sources */,
 				2AA83FA828047E7E00C79B19 /* block.c in Sources */,
+				2A76952E28083700002910F7 /* ods_check.c in Sources */,
 				2A42555728004AD300E35C97 /* journal.c in Sources */,
 				2A42555928004AD300E35C97 /* bcache.c in Sources */,
+				2A769530280842EC002910F7 /* ods_exercise.c in Sources */,
 				2A42555628004AD300E35C97 /* on_disk_system.c in Sources */,
+				2A4F8C742807593B00B980C1 /* ods_dump.c in Sources */,
 				2A42555528004AD300E35C97 /* transaction.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

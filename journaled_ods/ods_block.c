@@ -56,14 +56,6 @@ void ods_blk_destroy(void *bco) {
     free(ob);
 }
 
-void ods_blk_check(void *bco) {
-    ods_blk_t *ob = (ods_blk_t *)bco;
-    
-    assert(bl_type(ob_block(ob)) == ODS_PHYS_TYPE_BLOCK);
-    
-    return;
-}
-
 void ob_phys_dump(ods_blk_phys_t *obp) {
     bl_phys_dump((blk_phys_t *)obp);
     printf("obp_data: %" PRIu64 " ", obp->obp_data);
@@ -78,5 +70,5 @@ bco_ops_t ob_bco_ops = {
     .bco_init = ods_blk_init,
     .bco_destroy = ods_blk_destroy,
     .bco_dump = ods_blk_dump,
-    .bco_check = ods_blk_check
+    .bco_check = NULL
 };

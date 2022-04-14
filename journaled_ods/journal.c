@@ -11,6 +11,9 @@
 #include "block.h"
 #include "transaction.h"
 
+// static declarations
+static int jnl_flush_locked(jnl_t *jnl);
+
 int jnl_blk_init(void **bco, blk_t *b) {
     jnl_blk_t *jb;
     int err;
@@ -115,7 +118,7 @@ bco_ops_t jb_bco_ops = {
 
 int jnl_create(int fd, uint64_t offset, size_t dsksz) {
     blk_phys_t *blkp = NULL;
-    jnl_super_phys_t *jnlsp;
+    jnl_super_phys_t *jsp;
     int err;
     ssize_t ret;
     
@@ -133,14 +136,14 @@ int jnl_create(int fd, uint64_t offset, size_t dsksz) {
     memset(blkp, 0, ODS_BLKSZ);
     blkp->bp_type = ODS_PHYS_TYPE_JOURNAL;
     
-    jnlsp = (jnl_super_phys_t *)blkp;
-    jnlsp->js_header.jhp_type = JNL_PHYS_TYPE_SUPER;
-    jnlsp->js_flags = JNLP_JSF_BRAND_NEW;
-    jnlsp->js_magic = JNL_PHYS_MAGIC;
-    jnlsp->js_size = JNL_PHYS_DEFAULT_SIZE;
-    jnlsp->js_start_index = 1;
-    jnlsp->js_end_index = 1;
-    jnlsp->js_blksz = ODS_BLKSZ;
+    jsp = (jnl_super_phys_t *)blkp;
+    jsp->js_header.jhp_type = JNL_PHYS_TYPE_SUPER;
+    jsp->js_flags = JNLP_JSF_BRAND_NEW;
+    jsp->js_magic = JNL_PHYS_MAGIC;
+    jsp->js_size = JNL_PHYS_DEFAULT_SIZE;
+    jsp->js_start_index = 1;
+    jsp->js_end_index = 1;
+    jsp->js_blksz = ODS_BLKSZ;
     
     ret = pwrite(fd, blkp, ODS_BLKSZ, offset * ODS_BLKSZ);
     if (ret != ODS_BLKSZ) {
@@ -159,8 +162,9 @@ error_out:
     return err;
 }
 
-int jnl_startup(ods_t *ods) {
+int jnl_startup(ods_t *ods, bool *jnl_flushed) {
     jnl_t *jnl;
+    jnl_super_phys_t *jsp;
     bcache_t *bc;
     int err;
     
@@ -187,6 +191,21 @@ int jnl_startup(ods_t *ods) {
     }
     
     ods->ods_jnl = jnl;
+    
+    // flush the journal if it's not empty
+    jsp = (jnl_super_phys_t *)jb_phys(jnl->j_super);
+    if (jsp->js_end_index != jsp->js_start_index) {
+        printf("jnl_startup: flushing non-empty journal\n");
+        err = jnl_flush(jnl);
+        if (err) {
+            //
+            // we ignore error here. jnl_flush should reset the journal to
+            // a good state on disk regardless of whether or not any of the
+            // journal transactions were actually safe to replay/flush
+            //
+        }
+        *jnl_flushed = true;
+    }
     
     return 0;
     
@@ -228,20 +247,22 @@ error_out:
 }
 
 int jnl_check_disk(int fd, uint64_t offset, bool *brand_new) {
-    blk_phys_t *blkp;
-    jnl_super_phys_t *jnlsp;
-    jnl_txd_phys_t *jtdp;
-    jnl_txc_phys_t *jtcp;
+    uint8_t *buf;
+    blk_phys_t *bp;
+    jnl_super_phys_t *jsp;
     ssize_t ret;
+    ods_t ods;
+    jnl_t jnl;
+    jnl_blk_t jb;
     int err;
     
-    blkp = malloc(ODS_BLKSZ);
-    if (!blkp) {
+    buf = malloc(ODS_BLKSZ);
+    if (!buf) {
         err = ENOMEM;
         goto error_out;
     }
     
-    ret = pread(fd, blkp, ODS_BLKSZ, ODS_JOURNAL_OFFSET);
+    ret = pread(fd, buf, ODS_BLKSZ, ODS_JOURNAL_OFFSET);
     if (ret != ODS_BLKSZ) {
         printf("jnl_check_disk: pread failed\n");
         err = EIO;
@@ -249,72 +270,98 @@ int jnl_check_disk(int fd, uint64_t offset, bool *brand_new) {
     }
     
     // check the block header
-    if (blkp->bp_type != ODS_PHYS_TYPE_JOURNAL) {
-        printf("jnl_check_disk: blkp->bp_header.bhp_type != ODS_PHYS_TYPE_JOURNAL\n");
+    bp = (blk_phys_t *)buf;
+    if (bp->bp_type != ODS_PHYS_TYPE_JOURNAL) {
+        printf("jnl_check_disk: bp->bp_header.bhp_type != ODS_PHYS_TYPE_JOURNAL\n");
         err = EILSEQ;
         goto error_out;
     }
     
     // check the journal super block
-    jnlsp = (jnl_super_phys_t *)blkp;
+    jsp = (jnl_super_phys_t *)buf;
     
-    if (jnlsp->js_header.jhp_type != JNL_PHYS_TYPE_SUPER) {
-        printf("jnl_check_disk: jnlsp->js_header.jhp_type != JNL_PHYS_TYPE_SUPER\n");
+    if (jsp->js_header.jhp_type != JNL_PHYS_TYPE_SUPER) {
+        printf("jnl_check_disk: jsp->js_header.jhp_type != JNL_PHYS_TYPE_SUPER\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if (jnlsp->js_magic != JNL_PHYS_MAGIC) {
-        printf("jnl_check_disk: jnlsp->js_magic != JNL_PHYS_MAGIC\n");
+    if (jsp->js_magic != JNL_PHYS_MAGIC) {
+        printf("jnl_check_disk: jsp->js_magic != JNL_PHYS_MAGIC\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if ((jnlsp->js_flags & ~(JNLP_JSF_VALID_FLAGS)) != 0) {
-        printf("jnl_check_disk: (jnlsp->js_flags & ~(JNLP_JSF_VALID_FLAGS)) != 0\n");
+    if ((jsp->js_flags & ~(JNLP_JSF_VALID_FLAGS)) != 0) {
+        printf("jnl_check_disk: (jsp->js_flags & ~(JNLP_JSF_VALID_FLAGS)) != 0\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if (jnlsp->js_blksz != ODS_BLKSZ) {
-        printf("jnl_check_disk: jnlsp->js_blksz != ODS_BLKSZ\n");
+    if (jsp->js_blksz != ODS_BLKSZ) {
+        printf("jnl_check_disk: jsp->js_blksz != ODS_BLKSZ\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if (jnlsp->js_size != JNL_PHYS_DEFAULT_SIZE) {
-        printf("jnl_check_disk: jnlsp->js_size != JNL_PHYS_DEFAULT_SIZE\n");
+    if (jsp->js_size != JNL_PHYS_DEFAULT_SIZE) {
+        printf("jnl_check_disk: jsp->js_size != JNL_PHYS_DEFAULT_SIZE\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if ((jnlsp->js_start_index < 1) || (jnlsp->js_start_index > (jnlsp->js_size - 1))) {
-        printf("jnl_check_disk: (jnlsp->js_start_index < 1) || (jnlsp->js_start_index > (jnlsp->js_size - 1)\n");
+    if ((jsp->js_start_index < 1) || (jsp->js_start_index > (jsp->js_size - 1))) {
+        printf("jnl_check_disk: (jsp->js_start_index < 1) || (jsp->js_start_index > (jsp->js_size - 1)\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if ((jnlsp->js_end_index < 1) || (jnlsp->js_end_index > (jnlsp->js_size - 1))) {
-        printf("jnl_check_disk: (jnlsp->js_end_index < 1) || (jnlsp->js_end_index > (jnlsp->js_size - 1)\n");
+    if ((jsp->js_end_index < 1) || (jsp->js_end_index > (jsp->js_size - 1))) {
+        printf("jnl_check_disk: (jsp->js_end_index < 1) || (jsp->js_end_index > (jsp->js_size - 1)\n");
         err = EILSEQ;
         goto error_out;
     }
     
-    if (jnlsp->js_flags & JNLP_JSF_BRAND_NEW) {
-        if ((jnlsp->js_start_index != 1) || (jnlsp->js_end_index != 1)) {
+    if (jsp->js_flags & JNLP_JSF_BRAND_NEW) {
+        if ((jsp->js_start_index != 1) || (jsp->js_end_index != 1)) {
             err = EILSEQ;
             goto error_out;
         }
         *brand_new = true;
+        goto out;
     }
     
-    free(blkp);
+    if (jsp->js_end_index != jsp->js_start_index) { // journal isn't empty, replay any valid transactions via jnl_flush_locked
+        // fake up a jnl_t for jnl_flush_locked
+        memset(&ods, 0, sizeof(ods_t));
+        ods.ods_fd = fd;
+        
+        memset(&jb, 0, sizeof(jnl_blk_t));
+        jb.jb_phys = (jnl_blk_phys_t *)jsp;
+        
+        memset(&jnl, 0, sizeof(jnl_t));
+        jnl.j_ods = &ods;
+        jnl.j_super = &jb;
+        
+        printf("jnl_check_disk: flushing non-empty journal\n");
+        err = jnl_flush_locked(&jnl);
+        if (err) {
+            //
+            // we ignore error here. jnl_flush_locked should reset the journal to
+            // a good state on disk regardless of whether or not any of the journal
+            // transactions were actually safe to replay/flush
+            //
+        }
+    }
+    
+out:
+    free(buf);
     
     return 0;
     
 error_out:
-    if (blkp)
-        free(blkp);
+    if (buf)
+        free(buf);
         
     return err;
 }
@@ -359,9 +406,11 @@ static uint32_t jnl_free_space(jnl_t *jnl) {
     jnl_super_phys_t *jsp = (jnl_super_phys_t *)bl_phys(jb_block(jnl->j_super));
     uint32_t jnl_blks_used, jnl_blks_unused;
     
-    if (jsp->js_end_index >= jsp->js_start_index) {
+    if (jsp->js_end_index == jsp->js_start_index) {
+        jnl_blks_unused = jsp->js_size - 1;
+    } else if (jsp->js_end_index > jsp->js_start_index) {
         jnl_blks_used = (jsp->js_end_index - jsp->js_start_index + 1);
-        jnl_blks_unused = jsp->js_size - jnl_blks_used;
+        jnl_blks_unused = (jsp->js_size - 1) - jnl_blks_used;
     } else { // wrap around case
         jnl_blks_unused = (jsp->js_start_index - jsp->js_end_index - 1);
     }
@@ -379,12 +428,24 @@ static int jnl_flush_locked(jnl_t *jnl) {
     int32_t nblocks;
     uint64_t *td_map;
     ssize_t ret;
-    int err;
+    int err = 0;
     
     ods = jnl->j_ods;
-    jsp = (jnl_super_phys_t *)bl_phys(jb_block(jnl->j_super));
+    jsp = (jnl_super_phys_t *)jb_phys(jnl->j_super);
     if (jsp->js_start_index == jsp->js_end_index) // nothing to do
         goto out;
+    
+    if (jsp->js_end_index > jsp->js_start_index)
+        nblocks = jsp->js_end_index - jsp->js_start_index + 1;
+    else
+        nblocks = (jsp->js_size - jsp->js_start_index) + jsp->js_end_index;
+    
+    if ((nblocks <= 2) || (nblocks >= jsp->js_size)) {
+        printf("jnl_flush_locked: journal indexes are corrupt (js_start_index %" PRIu32 " js_end_index %" PRIu32 "); bailing\n",
+                jsp->js_start_index, jsp->js_end_index);
+        err = EILSEQ;
+        goto write_out_super;
+    }
     
     // meta data buffer
     mbuf = malloc(jsp->js_blksz * 2);
@@ -395,17 +456,8 @@ static int jnl_flush_locked(jnl_t *jnl) {
     dbuf = malloc(jsp->js_blksz);
     if (!mbuf)
         goto error_out;
-
-    
-    if (jsp->js_end_index > jsp->js_start_index)
-        nblocks = jsp->js_end_index - jsp->js_start_index + 1;
-    else
-        nblocks = (jsp->js_size - jsp->js_start_index) + jsp->js_end_index;
-    
-    assert((nblocks > 2) && (nblocks < jsp->js_size));
     
     // read through the journal and write out each transaction
-    
     tx_start = jsp->js_start_index;
     while (nblocks) {
         // read in the transaction descriptor
@@ -423,14 +475,17 @@ static int jnl_flush_locked(jnl_t *jnl) {
             goto write_out_super;
         }
         
-        if (td->jtd_size > (nblocks - 1)) {
+        if (td->jtd_size > (nblocks - 2)) {
             printf("jnl_flush_locked: tx descriptor size is invalid (%" PRIu32 "); bailing\n", td->jtd_size);
             err = EILSEQ;
             goto write_out_super;
         }
         
         // now read in the transaction commit block and make sure its tid matches the descriptor
-        ret = pread(ods->ods_fd, mbuf + jsp->js_blksz, jsp->js_blksz, (ODS_JOURNAL_OFFSET + tx_start + td->jtd_size + 1) * jsp->js_blksz);
+        curr_ind = tx_start + td->jtd_size + 1;
+        if (curr_ind >= jsp->js_size) // wrap around
+            curr_ind = (curr_ind % jsp->js_size) + 1;
+        ret = pread(ods->ods_fd, mbuf + jsp->js_blksz, jsp->js_blksz, (ODS_JOURNAL_OFFSET + curr_ind) * jsp->js_blksz);
         if (ret != jsp->js_blksz) {
             err = EIO;
             goto error_out;
@@ -453,6 +508,8 @@ static int jnl_flush_locked(jnl_t *jnl) {
         // ok, looks like this is a valid transaction. write out all the data blocks
         td_map = (uint64_t *)((uint8_t *)td + sizeof(jnl_txd_phys_t));
         curr_ind = tx_start + 1;
+        if (curr_ind >= jsp->js_size) // wrap around
+            curr_ind = (curr_ind % jsp->js_size) + 1;
         for (uint32_t i = 0; i < td->jtd_size; i++) {
             // read from the journal
             ret = pread(ods->ods_fd, dbuf, jsp->js_blksz, (ODS_JOURNAL_OFFSET + curr_ind) * jsp->js_blksz);
@@ -466,6 +523,14 @@ static int jnl_flush_locked(jnl_t *jnl) {
                 err = EIO;
                 goto error_out;
             }
+#if 0
+            if (i == td->jtd_size / 2) {
+                printf("jnl_flush_locked: sync'ing and crashing\n");
+                uint32_t *crashp = NULL;
+                assert(fsync(ods->ods_fd) == 0);
+                *crashp = 0xdead;
+            }
+#endif
             curr_ind++;
             if (curr_ind >= jsp->js_size) // wrap around
                 curr_ind = (curr_ind % jsp->js_size) + 1;
@@ -486,6 +551,14 @@ write_out_super:
         err = EIO;
         goto error_out;
     }
+    
+    // sync it all out
+    ret = fsync(ods->ods_fd);
+    if (ret) {
+        err = errno;
+        goto error_out;
+    }
+    
     if (err) // might have been set above on corruption
         goto error_out;
     
@@ -533,7 +606,7 @@ int jnl_write_transaction(jnl_t *jnl, blk_list_t *bl, uint32_t ntxblocks, tid_t 
     lock_lock(jnl->j_lock);
     
     ods = jnl->j_ods;
-    jsp = (jnl_super_phys_t *)bl_phys(jb_block(jnl->j_super));
+    jsp = (jnl_super_phys_t *)jb_phys(jnl->j_super);
     nblocks = ntxblocks + 2; // ntxblock + tx descriptor block + tx commit block
     
     if (ntxblocks < 1) {
@@ -633,6 +706,13 @@ int jnl_write_transaction(jnl_t *jnl, blk_list_t *bl, uint32_t ntxblocks, tid_t 
         }
     }
     
+#if 0
+    printf("jnl_write_transaction: sync'ing and crashing\n");
+    uint32_t *crashp = NULL;
+    assert(fsync(ods->ods_fd) == 0);
+    *crashp = 0xdead;
+#endif
+    
     if (jsp->js_end_index == jsp->js_start_index)
         jsp->js_end_index = jsp->js_end_index + nblocks - 1;
     else
@@ -657,6 +737,13 @@ int jnl_write_transaction(jnl_t *jnl, blk_list_t *bl, uint32_t ntxblocks, tid_t 
         err = errno;
         goto error_out;
     }
+    
+#if 0
+    printf("jnl_write_transaction: sync'ing and crashing\n");
+    uint32_t *crashp = NULL;
+    assert(fsync(ods->ods_fd) == 0);
+    *crashp = 0xdead;
+#endif
     
     free(buf);
     lock_unlock(jnl->j_lock);
@@ -728,6 +815,8 @@ void jnl_dump_disk(int fd) {
         ods_bl_phys_dump((blk_phys_t *)buf);
         printf("\n");
         curr_ind++;
+        if (curr_ind >= jsize) // wrap around
+            curr_ind = (curr_ind % jsize) + 1;
         nblocks--;
     }
     
@@ -758,6 +847,11 @@ void jnl_check(jnl_t *jnl) {
 uint32_t jnl_size(jnl_t *jnl) {
     jnl_super_phys_t *jsp = (jnl_super_phys_t *)jnl->j_super->jb_phys;
     return jsp->js_size;
+}
+
+uint32_t jnl_capacity(jnl_t *jnl) {
+    jnl_super_phys_t *jsp = (jnl_super_phys_t *)jnl->j_super->jb_phys;
+    return jsp->js_size - 3; // super + tx desc + tx commit
 }
 
 blk_t *jb_block(jnl_blk_t *jb) {

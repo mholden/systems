@@ -12,18 +12,28 @@
 #include "block.h"
 #include "on_disk_system.h"
 #include "transaction.h"
+#include "journal.h"
+
+static bool bc_bl_is_on_fl_locked(bcache_t *bc, blk_t *b) {
+    blk_t *_b;
+    TAILQ_FOREACH(_b, &bc->bc_fl, bl_fl_link) {
+        if (_b == b)
+            return true;
+    }
+    return false;
+}
 
 // appropriate locks should be held
 void bc_dump(bcache_t *bc) {
     blk_t *b;
     blk_list_t *bl;
     printf("block cache @ %p: ", bc);
-    printf("bc_currsz: %" PRIu32 " ", bc->bc_currsz);
-    printf("bc_maxsz: %" PRIu32 " ", bc->bc_maxsz);
+    printf("bc_currsz: %" PRIu32 " (%" PRIu32 " blocks) ", bc->bc_currsz, bc->bc_currsz / bc->bc_blksz);
+    printf("bc_maxsz: %" PRIu32 " (%" PRIu32 " blocks) ", bc->bc_maxsz, bc->bc_maxsz / bc->bc_blksz);
+    printf("bc_ndirty: %" PRIu32 " ", bc->bc_ndirty);
+    printf("bc_nfree: %" PRIu32 " ", bc->bc_nfree);
     printf("bcs_hits: %" PRIu64 " ", bc->bc_stats.bcs_hits);
     printf("bcs_misses: %" PRIu64 " ", bc->bc_stats.bcs_misses);
-    printf("bcs_writes: %" PRIu64 " ", bc->bc_stats.bcs_writes);
-    printf("bcs_flushes: %" PRIu64 " ", bc->bc_stats.bcs_flushes);
     printf("\n");
     for (int i = 0; i < (bc->bc_maxsz / bc->bc_blksz) * 2; i++) {
         bl = &bc->bc_ht[i];
@@ -117,12 +127,15 @@ void bc_destroy(bcache_t *bc) {
 }
 
 int bc_get(bcache_t *bc, uint64_t blkno, bco_ops_t *bco_ops, void **bco) {
+    ods_t *ods;
     blk_t *b;
     blk_list_t *bl;
     bool alloced_b = false;
     int err;
     
     lock_lock(bc->bc_lock);
+
+    ods = bc->bc_ods;
     
     bl = &bc->bc_ht[blkno % ((bc->bc_maxsz / bc->bc_blksz) * 2)];
     LIST_FOREACH(b, bl, bl_ht_link) {
@@ -140,30 +153,33 @@ int bc_get(bcache_t *bc, uint64_t blkno, bco_ops_t *bco_ops, void **bco) {
         // cache is at max capacity. evict a block
         //
         if (TAILQ_EMPTY(&bc->bc_fl)) {
-            printf("bc_get: no blocks free\n");
+            printf("bc_get: no free blocks\n");
             err = ENOMEM;
             goto error_out;
         }
         b = TAILQ_FIRST(&bc->bc_fl);
         
         //
-        // TODO: force a journal flush whether it's dirty or not
-        // otherwise if we read it back in after eviction we'll
-        // get a stale disk block if it's sitting in the journal
+        // we don't allow dirty blocks on the free list.
+        // if we did, we would have to tx_flush here, which
+        // we can't do in a deadlock-safe way (we might be
+        // in a transaction right now, in which case tx_flush
+        // is waiting for us to finish our transaction. so,
+        // we'd be waiting for flush and flush would be
+        // waiting for us)
         //
-        assert(0);
+        assert(!(b->bl_flags & B_DIRTY));
         
-        // flush it out if it's dirty
-        if (b->bl_flags & B_DIRTY) {
-            // TODO: drop lock
-            if (pwrite(bc->bc_fd, b->bl_phys, bc->bc_blksz, b->bl_blkno * bc->bc_blksz) != bc->bc_blksz) {
-                err = EIO;
-                goto error_out;
-            }
-            b->bl_flags &= ~B_DIRTY;
-            LIST_REMOVE(b, bl_dl_link);
-            bc->bc_stats.bcs_writes++;
-        }
+        //
+        // we need to flush the journal here in case b is in the
+        // journal but not yet in its actual location on disk.
+        // otherwise if we evict here and then re-read b soon
+        // after (still before it's written from journal to its
+        // actual location), we'll get stale / old data
+        //
+        err = jnl_flush(ods->ods_jnl);
+        if (err)
+            goto error_out;
         
         // read in the new block
         if (pread(bc->bc_fd, b->bl_phys, bc->bc_blksz, blkno * bc->bc_blksz) != bc->bc_blksz) {
@@ -230,6 +246,7 @@ int bc_get(bcache_t *bc, uint64_t blkno, bco_ops_t *bco_ops, void **bco) {
         b->bl_bco = *bco;
         LIST_INSERT_HEAD(bl, b, bl_ht_link);
         TAILQ_INSERT_TAIL(&bc->bc_fl, b, bl_fl_link);
+        bc->bc_nfree++;
         bc->bc_currsz += bc->bc_blksz;
     }
     
@@ -239,7 +256,10 @@ found:
         // if it was free, it isn't anymore.
         // take it off the free list
         //
-        TAILQ_REMOVE(&bc->bc_fl, b, bl_fl_link);
+        if (!(b->bl_flags & B_DIRTY)) { // dirty blocks aren't on the free list
+            TAILQ_REMOVE(&bc->bc_fl, b, bl_fl_link);
+            bc->bc_nfree--;
+        }
     }
     b->bl_refcnt++;
     *bco = b->bl_bco;
@@ -269,11 +289,13 @@ void bc_dirty(bcache_t *bc, blk_t *b, tid_t tid) {
     ods = bc->bc_ods;
     if (!(b->bl_flags & B_DIRTY)) {
         b->bl_flags |= B_DIRTY;
+        assert(b->bl_refcnt > 0);
         LIST_INSERT_HEAD(&bc->bc_dl, b, bl_dl_link);
         if (tid != b->bl_tid) {
             assert(b->bl_tid == TX_ID_NONE);
             tx_add_block(ods->ods_tm, b, tid);
         }
+        bc->bc_ndirty++;
     }
     lock_unlock(bc->bc_lock);
     return;
@@ -283,8 +305,10 @@ void bc_release(bcache_t *bc, blk_t *b) {
     lock_lock(bc->bc_lock);
     assert(b->bl_refcnt > 0);
     b->bl_refcnt--;
-    if (b->bl_refcnt == 0)
+    if ((b->bl_refcnt == 0) && !(b->bl_flags & B_DIRTY)) {
         TAILQ_INSERT_TAIL(&bc->bc_fl, b, bl_fl_link);
+        bc->bc_nfree++;
+    }
     lock_unlock(bc->bc_lock);
     return;
 }
@@ -293,21 +317,14 @@ int bc_flush(bcache_t *bc) {
     ods_t *ods;
     int err;
     
-    lock_lock(bc->bc_lock);
-    
     ods = bc->bc_ods;
     err = tx_flush(ods->ods_tm);
     if (err)
         goto error_out;
     
-    bc->bc_stats.bcs_flushes++;
-    
-    lock_unlock(bc->bc_lock);
-    
     return 0;
     
 error_out:
-    lock_unlock(bc->bc_lock);
     return err;
 }
 
@@ -316,7 +333,7 @@ void bc_check(bcache_t *bc) {
     ods_t *ods;
     blk_t *b, *_b;
     blk_list_t *bl;
-    uint32_t nblocks = 0;
+    uint32_t nblocks = 0, nfree = 0, ndirty = 0;
     bool free, dirty;
     ods = bc->bc_ods;
     for (int i = 0; i < (bc->bc_maxsz / bc->bc_blksz) * 2; i++) {
@@ -337,23 +354,34 @@ void bc_check(bcache_t *bc) {
                         free = true;
                     }
                 }
-                assert((free && (b->bl_refcnt == 0)) || (b->bl_refcnt > 0));
+                assert(!(dirty && free));
+                if (free)
+                    assert(b->bl_refcnt == 0);
                 if (dirty) {
                     assert((b->bl_flags & B_DIRTY) && (b->bl_tid != TX_ID_NONE));
-                    assert(tx_is_open_locked(ods->ods_tm) && tx_contains_block_locked(ods->ods_tm, b));
+                    assert((tx_state_locked(ods->ods_tm) != TX_IDLE) && tx_contains_block_locked(ods->ods_tm, b));
                 } else {
                     assert(!(b->bl_flags & B_DIRTY) && (b->bl_tid == TX_ID_NONE));
                 }
-                b->bl_bco_ops->bco_check(b->bl_bco);
+                if (b->bl_bco_ops->bco_check)
+                    b->bl_bco_ops->bco_check(b->bl_bco);
                 nblocks++;
             }
         }
     }
     if (!LIST_EMPTY(&bc->bc_dl)) { // all dirty blocks should be in a transaction
-        assert(tx_is_open_locked(ods->ods_tm));
-        LIST_FOREACH(b, &bc->bc_dl, bl_dl_link)
+        assert(tx_state_locked(ods->ods_tm) != TX_IDLE);
+        LIST_FOREACH(b, &bc->bc_dl, bl_dl_link) {
+            ndirty++;
             assert(tx_contains_block_locked(ods->ods_tm, b));
+        }
     }
+    if (!TAILQ_EMPTY(&bc->bc_fl)) {
+        TAILQ_FOREACH(b, &bc->bc_fl, bl_fl_link)
+            nfree++;
+    }
+    assert(bc->bc_ndirty == ndirty);
+    assert(bc->bc_nfree == nfree);
     assert(bc->bc_currsz == (nblocks * bc->bc_blksz));
     assert(bc->bc_currsz <= bc->bc_maxsz);
     return;
