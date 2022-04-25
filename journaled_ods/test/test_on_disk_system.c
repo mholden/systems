@@ -25,17 +25,18 @@
 #define TEST_ODS_NBGROUPS (TEST_ODS_NBGROUPS_BLOCKS / ODS_BLOCKS_PER_GROUP)
 
 static void test_ods_random_with_crashes_child(void) {
-    
+    // TODO: implement
 }
 
 static void test_ods_random_with_crashes(void) {
     // launch this executable with --child, then kill it
-    // do this a number of times
-}
-
-// test some synchronization stuff
-static void test_synch(void) {
-    
+    // do this a number of times, and ods_check_disk after
+    // you kill the child each time. maybe copy backing file
+    // to another location before checking it so that if the
+    // check fails you'll have the image that causes the
+    // failure (otherwise journal replay during ods_check_disk
+    // will modify the image)
+    // TODO: implement
 }
 
 // test journal wrap around
@@ -213,7 +214,7 @@ write:
             if (bgroups[bgroup])
                 assert(obp->obp_data == bgroups[bgroup]);
             
-            tx_start(ods->ods_tm, ODS_BLOCKS_PER_GROUP, &tid);
+            assert(tx_start(ods->ods_tm, ODS_BLOCKS_PER_GROUP, &tid) == 0);
             
             if (!bgroups[bgroup]) {
                 obp->obp_blk.bp_type = ODS_PHYS_TYPE_BLOCK;
@@ -233,7 +234,7 @@ write:
                 bc_release(ods->ods_bc, ob_block(ob));
             }
             
-            tx_finish(ods->ods_tm, tid);
+            assert(tx_finish(ods->ods_tm, tid) == 0);
             
             bgroups[bgroup] = data;
         } else if (op == 1) { // read
@@ -260,13 +261,13 @@ write:
         
         // flush every so often
         if ((bgroup % 128) == 0)
-            bc_flush(ods->ods_bc);
+            assert(bc_flush(ods->ods_bc) == 0);
         
         //ods_check(ods);
-        /*
+#if 0
         if ((i % 256) == 0)
             printf("  thread %s through iter %d\n", t->t_name, i);
-        */
+#endif
     }
     
     return 0;
@@ -282,7 +283,7 @@ static void test_ods_random(int num_ops) {
     assert(bgroups = malloc(sizeof(uint64_t) * TEST_ODS_NBGROUPS));
     memset(bgroups, 0, sizeof(uint64_t) * TEST_ODS_NBGROUPS);
     
-    printf("test_ods_random\n");
+    printf("test_ods_random (num ops %d)\n", num_ops);
     
     assert(ods_create(TEST_ODS_BACKING_FILE, TEST_ODS_DEFAULT_FLSZ) == 0);
     assert(ods_check_disk(TEST_ODS_BACKING_FILE) == 0);
@@ -351,7 +352,7 @@ int main(int argc, char **argv) {
                 child = true;
                 break;
             default:
-                printf("usage: %s [--num <num-elements>] [--seed <seed>] [--create]\n", argv[0]);
+                printf("usage: %s [--num <num-operations>] [--seed <seed>] [--create]\n", argv[0]);
                 return -1;
         }
     }
