@@ -190,6 +190,16 @@ int bc_get(bcache_t *bc, uint64_t blkno, bco_ops_t *bco_ops, void **bco) {
         b->bl_blkno = blkno;
         b->bl_tid = TX_ID_NONE;
         
+        // re-init bco
+        b->bl_bco_ops->bco_destroy(b->bl_bco);
+        b->bl_bco = NULL;
+        
+        memcpy(b->bl_bco_ops, bco_ops, sizeof(bco_ops_t));
+        
+        err = b->bl_bco_ops->bco_init(&b->bl_bco, b);
+        if (err)
+            goto error_out;
+        
         // get it on the right hash list
         LIST_REMOVE(b, bl_ht_link);
         LIST_INSERT_HEAD(bl, b, bl_ht_link);
@@ -239,11 +249,10 @@ int bc_get(bcache_t *bc, uint64_t blkno, bco_ops_t *bco_ops, void **bco) {
         b->bl_blkno = blkno;
         b->bl_tid = TX_ID_NONE;
         
-        err = b->bl_bco_ops->bco_init(bco, b);
+        err = b->bl_bco_ops->bco_init(&b->bl_bco, b);
         if (err)
             goto error_out;
         
-        b->bl_bco = *bco;
         LIST_INSERT_HEAD(bl, b, bl_ht_link);
         TAILQ_INSERT_TAIL(&bc->bc_fl, b, bl_fl_link);
         bc->bc_nfree++;
