@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <assert.h>
+#include <stdlib.h>
 
 int prog1(void);
 
