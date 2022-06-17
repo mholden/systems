@@ -3,7 +3,7 @@ CFLAGS=-g
 DEVEL=/home/mholden/devel
 DS=$(DEVEL)/data_structs
 SY=$(DEVEL)/synch
-JS=$(DEVEL)/2022-interview-prep/journaled_ods
+JS=$(DEVEL)/systems/journaled_ods
 INCLUDES=-I$(JS)/include -I$(SY)/include -I$(DS)/include
 
 all: on_disk_system

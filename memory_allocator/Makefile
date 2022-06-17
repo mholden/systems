@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-g
 DEVEL=/home/mholden/devel
-MA=$(DEVEL)/2022-interview-prep/memory_allocator
+MA=$(DEVEL)/systems/memory_allocator
 SY=$(DEVEL)/synch
 DS=$(DEVEL)/data_structs
 INCLUDES=-I$(MA)/include -I$(SY)/include -I$(DS)/include
