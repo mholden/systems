@@ -1,0 +1,3 @@
+A basic journaled on-disk-system, utilizing a block cache and a transaction subsystem.
+
+See test/test_on_disk_system.c for example use.
