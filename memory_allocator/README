@@ -1,0 +1,3 @@
+A basic memory allocator, built on top of a page allocator.
+
+See test_memory_allocator.c for example use.
