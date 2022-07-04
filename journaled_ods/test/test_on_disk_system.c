@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
 
 #include "on_disk_system.h"
 #include "transaction.h"
@@ -23,21 +24,6 @@
 #define TEST_ODS_NF_BLOCKS (TEST_ODS_DEFAULT_FLSZ / TEST_ODS_BLOCK_SIZE)
 #define TEST_ODS_NBGROUPS_BLOCKS (TEST_ODS_NF_BLOCKS - JNL_PHYS_DEFAULT_SIZE)
 #define TEST_ODS_NBGROUPS (TEST_ODS_NBGROUPS_BLOCKS / ODS_BLOCKS_PER_GROUP)
-
-static void test_ods_random_with_crashes_child(void) {
-    // TODO: implement
-}
-
-static void test_ods_random_with_crashes(void) {
-    // launch this executable with --child, then kill it
-    // do this a number of times, and ods_check_disk after
-    // you kill the child each time. maybe copy backing file
-    // to another location before checking it so that if the
-    // check fails you'll have the image that causes the
-    // failure (otherwise journal replay during ods_check_disk
-    // will modify the image)
-    // TODO: implement
-}
 
 // test journal wrap around
 static void test_ods2(void) {
@@ -327,13 +313,13 @@ static void test_ods_random(int num_ops) {
 int main(int argc, char **argv) {
     unsigned int seed = 0;
     int ch, num_ops = DEFAULT_NUM_OPS, fd;
-    bool create = false, child = false;
+    bool create = false;
+    struct stat st;
     
     struct option longopts[] = {
         { "num",    required_argument,   NULL,   'n' },
         { "seed",   required_argument,   NULL,   's' },
         { "create", no_argument,         NULL,   'c' },
-        { "child",  no_argument,         NULL,   'i' },
         { NULL,                0,        NULL,    0 }
     };
 
@@ -347,9 +333,6 @@ int main(int argc, char **argv) {
                 break;
             case 'c':
                 create = true;
-                break;
-            case 'i':
-                child = true;
                 break;
             default:
                 printf("usage: %s [--num <num-operations>] [--seed <seed>] [--create]\n", argv[0]);
@@ -370,16 +353,14 @@ int main(int argc, char **argv) {
         fd = open(TEST_ODS_BACKING_FILE, O_CREAT | O_RDWR);
         assert(fd >= 0);
         close(fd);
-        
+    } else if (stat(TEST_ODS_BACKING_FILE, &st) == -1 && errno == ENOENT) {
+        printf("%s doesn't exist: try running with --create\n", TEST_ODS_BACKING_FILE);
+        return -1;
     }
-    
-    if (child)
-        test_ods_random_with_crashes_child();
     
     test_ods1();
     test_ods2();
     test_ods_random(num_ops);
-    test_ods_random_with_crashes();
     
     return 0;
 }
